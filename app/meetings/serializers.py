@@ -6,6 +6,7 @@ def meeting_to_dict(meeting, include_summary=False):
     data = {
         "id": str(meeting.uid),
         "source": meeting.source,
+        "client": meeting.client,
         "title": meeting.title,
         "meeting_url": meeting.meeting_url,
         "start": _iso(meeting.start),

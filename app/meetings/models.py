@@ -18,7 +18,8 @@ class Meeting(models.Model):
         CANCELLED = "cancelled", "Ləğv edilib"
 
     class Source(models.TextChoices):
-        CALENDAR = "calendar", "SABAH.OS calendar"
+        CALENDAR = "calendar", "SABAH.OS calendar (DB pull)"
+        EVENT = "event", "SABAH.OS event toggle"
         MANUAL = "manual", "API ilə əl ilə"
 
     # States in which the bot can still be stopped / its meeting is not over.
@@ -30,6 +31,8 @@ class Meeting(models.Model):
     # Google meeting collapse onto one row, so only one bot joins.
     dedup_key = models.CharField(max_length=64, unique=True)
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.CALENDAR)
+    # Which SABAH.OS environment asked for the bot ("prod", "dev", …); "" for the DB pull / admin.
+    client = models.CharField(max_length=40, blank=True, default="", db_index=True)
     source_event_ids = models.JSONField(default=list, blank=True)
 
     title = models.CharField(max_length=300, blank=True, default="")
@@ -73,6 +76,26 @@ class Meeting(models.Model):
 
     def __str__(self):
         return f"{self.title or self.meeting_url} — {self.start:%Y-%m-%d %H:%M}"
+
+
+class EventLink(models.Model):
+    """A SABAH.OS calendar event whose Notetaker toggle is on, and the meeting it rides on.
+
+    Several events can share one meeting (each member's copy of the same Google meeting),
+    so they share one bot. An event is on at most one meeting at a time.
+    """
+
+    client = models.CharField(max_length=40)
+    event_id = models.CharField(max_length=64)
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="event_links")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["client", "event_id"], name="event_link_unique_per_client")]
+
+    def __str__(self):
+        return f"{self.client}:{self.event_id} → {self.meeting_id}"
 
 
 class Utterance(models.Model):

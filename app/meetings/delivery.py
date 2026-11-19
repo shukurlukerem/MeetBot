@@ -54,8 +54,10 @@ def send_summary_email(meeting):
     text = meeting.summary_markdown
     if link:
         text += f"\n---\nFull transcript: {link}\n"
+    # Mail from a non-production SABAH.OS environment says so in the subject.
+    prefix = f"[{meeting.client}] " if meeting.client and meeting.client != "prod" else ""
     mailer.send_message(
-        subject=f"Meeting notes: {title} ({date})",
+        subject=f"{prefix}Meeting notes: {title} ({date})",
         to_addresses=recipients,
         text_body=text,
         html_body=render_html(meeting, meeting.summary or {}, link),

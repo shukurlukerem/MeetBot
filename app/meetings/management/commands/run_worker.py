@@ -54,9 +54,9 @@ class Command(BaseCommand):
                         len(result.scheduled),
                         len(result.cancelled),
                     )
+            self._safely("schedule due bots", pipeline.schedule_due)
             if now_mono - last_reconcile >= RECONCILE_EVERY or options["once"]:
                 last_reconcile = now_mono
-                self._safely("retry pending", pipeline.retry_pending)
                 self._safely("reconcile", pipeline.reconcile_bots)
             done = self._safely("summaries", pipeline.process_due_meetings) or []
             for meeting in done:

@@ -311,15 +311,18 @@ def _upsert_calendar_meeting(cand):
     return meeting
 
 
-def create_manual_meeting(meeting_url, title="", start=None, end=None, invitees=None, organizer_email="", client=None):
+def create_manual_meeting(
+    meeting_url, title="", start=None, end=None, invitees=None, organizer_email="", client=None, client_name=""
+):
     """Send the bot to any Meet link right away (or at `start`)."""
     now = timezone.now()
     start = start or now.replace(second=0, microsecond=0)
-    key = make_dedup_key(meeting_url, start)
+    key = make_dedup_key(meeting_url, start, client_name)
     meeting, created = Meeting.objects.get_or_create(
         dedup_key=key,
         defaults={
             "source": Meeting.Source.MANUAL,
+            "client": client_name,
             "meeting_url": normalize_meet_url(meeting_url),
             "title": title[:300],
             "start": start,

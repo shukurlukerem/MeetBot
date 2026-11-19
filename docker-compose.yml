@@ -21,6 +21,9 @@ x-attendee-env: &attendee-env
   CSRF_TRUSTED_ORIGINS: https://${ATTENDEE_DOMAIN:-localhost:8101}
   DISABLE_SIGNUP: "true"
   DISABLE_EMAIL: "true"
+  # Self-hosted: no credit metering. The dashboard's "5 hours of free credits" banner is static text;
+  # with this off the balance never goes down and bots are never blocked.
+  CHARGE_CREDITS_FOR_BOTS: "false"
   # Webhooks go to meetbot-web over the internal network.
   REQUIRE_HTTPS_WEBHOOKS: "false"
   # S3-compatible storage (SeaweedFS below) for debug screenshots / optional recordings.

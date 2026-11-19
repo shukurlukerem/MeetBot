@@ -96,8 +96,10 @@ def normalize_meet_url(url):
     return f"https://{host}{path}"
 
 
-def make_dedup_key(meeting_url, start):
+def make_dedup_key(meeting_url, start, client=""):
     raw = f"{normalize_meet_url(meeting_url)}|{start.isoformat()}"
+    if client:
+        raw = f"{client}|{raw}"  # dev and prod each get their own bot
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 

@@ -1,4 +1,4 @@
-.PHONY: setup up down restart logs ps superuser test update-attendee sync-now shell stt-keys sabah-reader-sql
+.PHONY: setup up down restart logs ps superuser test update-attendee sync-now shell stt-keys sabah-reader-sql backend-env
 
 setup:            ## first install / re-run safely
 	./scripts/bootstrap.sh
@@ -11,6 +11,9 @@ stt-keys:         ## after adding/changing GLADIA_API_KEY (etc.) in .env — sto
 
 sabah-reader-sql: ## SQL for the read-only role on the SABAH.OS database (password from .env)
 	@./scripts/sabah-reader-sql.sh
+
+backend-env:      ## the MEETBOT_API_URL / MEETBOT_API_TOKEN lines for each SABAH.OS backend .env
+	@./scripts/backend-env.sh
 
 down:
 	docker compose down

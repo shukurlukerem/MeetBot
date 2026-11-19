@@ -18,6 +18,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from . import summarizer
 from .attendee import AttendeeClient, AttendeeError
+from .events import MAX_EVENTS_PER_CALL, EventPayloadError, meeting_for_event, sync_events
 from .models import Meeting
 from .pipeline import queue_resummarize
 from .scheduling import cancel_meeting, create_manual_meeting
@@ -30,18 +31,39 @@ def error(message, status):
     return JsonResponse({"error": message}, status=status)
 
 
+def authenticate(given):
+    """Returns None for the admin token, the client name for a client token, False otherwise."""
+    if not given:
+        return False
+    conf = settings.MEETBOT
+    if conf["API_TOKEN"] and hmac.compare_digest(given.encode(), conf["API_TOKEN"].encode()):
+        return None
+    for token, name in conf["API_CLIENTS"].items():
+        if hmac.compare_digest(given.encode(), token.encode()):
+            return name
+    return False
+
+
+def scoped(request, qs=None):
+    qs = Meeting.objects.all() if qs is None else qs
+    return qs if request.meetbot_client is None else qs.filter(client=request.meetbot_client)
+
+
 def api_view(methods):
     def decorator(view):
         @csrf_exempt
         @functools.wraps(view)
         def wrapper(request, *args, **kwargs):
-            token = settings.MEETBOT["API_TOKEN"]
-            if not token:
-                return error("API is disabled (MEETBOT_API_TOKEN is not set)", 503)
+            conf = settings.MEETBOT
+            if not conf["API_TOKEN"] and not conf["API_CLIENTS"]:
+                return error("API is disabled (no MEETBOT_API_TOKEN / MEETBOT_TOKEN_* set)", 503)
             header = request.headers.get("Authorization", "")
             given = header[7:] if header.startswith("Bearer ") else ""
-            if not given or not hmac.compare_digest(given.encode(), token.encode()):
+            client = authenticate(given)
+            if client is False:
                 return error("unauthorized", 401)
+            # None = admin token (every client); a name = one SABAH.OS environment's own meetings.
+            request.meetbot_client = client
             if request.method not in methods:
                 return error("method not allowed", 405)
             if request.method in ("POST", "PATCH") and request.body:
@@ -60,9 +82,9 @@ def api_view(methods):
     return decorator
 
 
-def _get_meeting(uid):
+def _get_meeting(request, uid):
     try:
-        return Meeting.objects.get(uid=uid)
+        return scoped(request).get(uid=uid)
     except (Meeting.DoesNotExist, ValueError):
         return None
 
@@ -71,7 +93,7 @@ def _get_meeting(uid):
 def meetings(request):
     if request.method == "POST":
         return _create_meeting(request)
-    qs = Meeting.objects.all()
+    qs = scoped(request)
     if request.GET.get("status"):
         qs = qs.filter(status__in=request.GET["status"].split(","))
     if request.GET.get("from"):
@@ -124,13 +146,14 @@ def _create_meeting(request):
         end=end,
         invitees=invitees,
         organizer_email=body.get("organizer_email") or "",
+        client_name=request.meetbot_client or "",
     )
     return JsonResponse(meeting_to_dict(meeting, include_summary=True), status=201 if created else 200)
 
 
 @api_view(["GET", "DELETE"])
 def meeting_detail(request, uid):
-    meeting = _get_meeting(uid)
+    meeting = _get_meeting(request, uid)
     if meeting is None:
         return error("not found", 404)
     if request.method == "DELETE":
@@ -143,7 +166,7 @@ def meeting_detail(request, uid):
 
 @api_view(["GET"])
 def meeting_transcript(request, uid):
-    meeting = _get_meeting(uid)
+    meeting = _get_meeting(request, uid)
     if meeting is None:
         return error("not found", 404)
     utterances = list(meeting.utterances.all())
@@ -154,7 +177,7 @@ def meeting_transcript(request, uid):
 
 @api_view(["POST"])
 def meeting_summarize(request, uid):
-    meeting = _get_meeting(uid)
+    meeting = _get_meeting(request, uid)
     if meeting is None:
         return error("not found", 404)
     instructions = request.json.get("instructions")
@@ -169,7 +192,7 @@ def meeting_summarize(request, uid):
 
 @api_view(["POST"])
 def meeting_ask(request, uid):
-    meeting = _get_meeting(uid)
+    meeting = _get_meeting(request, uid)
     if meeting is None:
         return error("not found", 404)
     question = request.json.get("question")
@@ -190,7 +213,7 @@ def meeting_ask(request, uid):
 
 @api_view(["POST"])
 def meeting_leave(request, uid):
-    meeting = _get_meeting(uid)
+    meeting = _get_meeting(request, uid)
     if meeting is None:
         return error("not found", 404)
     if not meeting.bot_id or meeting.status != Meeting.Status.IN_MEETING:
@@ -200,6 +223,47 @@ def meeting_leave(request, uid):
     except AttendeeError as exc:
         return error(f"Attendee refused: {exc}", 502)
     return JsonResponse(meeting_to_dict(meeting), status=202)
+
+
+@api_view(["POST"])
+def events_sync(request):
+    """POST /api/events/sync/ — {"events": [...], "window": {"start", "end"}?} (see meetings/events.py)."""
+    if request.meetbot_client is None:
+        return error("use an environment token (MEETBOT_TOKEN_<NAME>) for event sync", 403)
+    items = request.json.get("events")
+    if not isinstance(items, list) or len(items) > MAX_EVENTS_PER_CALL:
+        return error(f"events must be a list of at most {MAX_EVENTS_PER_CALL}", 400)
+    window = None
+    if request.json.get("window"):
+        raw = request.json["window"]
+        start = parse_datetime((raw or {}).get("start") or "")
+        end = parse_datetime((raw or {}).get("end") or "")
+        if start is None or end is None or timezone.is_naive(start) or timezone.is_naive(end) or end <= start:
+            return error("window needs ISO 8601 start < end with a timezone", 400)
+        window = (start, end)
+    try:
+        results = sync_events(request.meetbot_client, items, window=window)
+    except EventPayloadError as exc:
+        return error(str(exc), 400)
+    return JsonResponse(
+        {
+            "results": [
+                {"event_id": r["event_id"], "meeting": meeting_to_dict(r["meeting"]) if r["meeting"] else None}
+                for r in results
+            ]
+        }
+    )
+
+
+@api_view(["GET"])
+def event_detail(request, event_id):
+    """GET /api/events/<event_id>/ — the bot and notes for one SABAH.OS event."""
+    if request.meetbot_client is None:
+        return error("use an environment token (MEETBOT_TOKEN_<NAME>)", 403)
+    meeting = meeting_for_event(request.meetbot_client, event_id)
+    if meeting is None:
+        return error("no notetaker for this event", 404)
+    return JsonResponse(meeting_to_dict(meeting, include_summary=True))
 
 
 def healthz(request):

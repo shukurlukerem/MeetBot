@@ -11,4 +11,6 @@ urlpatterns = [
     path("api/meetings/<uuid:uid>/summarize/", api.meeting_summarize),
     path("api/meetings/<uuid:uid>/ask/", api.meeting_ask),
     path("api/meetings/<uuid:uid>/leave/", api.meeting_leave),
+    path("api/events/sync/", api.events_sync),
+    path("api/events/<str:event_id>/", api.event_detail),
 ]
