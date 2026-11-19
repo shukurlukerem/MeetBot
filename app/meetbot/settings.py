@@ -155,9 +155,21 @@ def _sabah_database_url():
 
 
 # --- Meetbot -----------------------------------------------------------------
+def _api_clients():
+    """`MEETBOT_TOKEN_<NAME>=<token>` → {token: "name"}; one per SABAH.OS environment (prod, dev, …)."""
+    clients = {}
+    for key, value in os.environ.items():
+        if key.startswith("MEETBOT_TOKEN_") and value.strip():
+            clients[value.strip()] = key[len("MEETBOT_TOKEN_"):].lower()
+    return clients
+
+
 MEETBOT = {
-    # Our own REST API (Authorization: Bearer <token>). Empty disables the API.
+    # Admin token for our own REST API (Authorization: Bearer <token>): sees every client.
     "API_TOKEN": env("MEETBOT_API_TOKEN"),
+    # Per-environment tokens. Each SABAH.OS backend (sabahos.com, dev.sabahos.com) uses its own,
+    # and only ever sees its own meetings — one Meetbot serves them all.
+    "API_CLIENTS": _api_clients(),
     "PUBLIC_URL": env("MEETBOT_PUBLIC_URL").rstrip("/"),
     # Attendee engine
     "ATTENDEE_API_URL": env("ATTENDEE_API_URL", "http://attendee-app:8000").rstrip("/"),

@@ -1,46 +1,50 @@
 # SABAH Meetbot
 
-SABAH.OS calendar-ındakı Google Meet görüşlərinə avtomatik qoşulan, danışılanları yığan və sonda
-**Claude** ilə **ingiliscə** xülasə hazırlayan, öz serverimizdə işləyən bot.
+SABAH.OS calendar-ında **Notetaker düyməsi açılmış** Google Meet görüşlərinə qoşulan, danışılanları yığan
+və sonda **Claude** ilə **ingiliscə** xülasə hazırlayan, öz serverimizdə işləyən bot.
 Görüşlər Azərbaycan, rus, ingilis dilində və ya bu üç dilin qarışığında ola bilər.
+Bir meetbot həm `sabahos.com`, həm `dev.sabahos.com` üçün işləyir. Dev üçün ayrıca host lazım deyil.
 
 Bot açıq mənbəli [Attendee](https://github.com/attendee-labs/attendee) mühərriki üzərində qurulub
-(dəyişdirilmədən, ELv2 lisenziyası ilə). Bu qovluq onun üstünə SABAH-a xas hissəni əlavə edir:
-calendar inteqrasiyası, transkriptin saxlanması, Claude xülasəsi, e-poçt, API, admin panel.
+(dəyişdirilmədən, ELv2 lisenziyası ilə). Bu repo onun üstünə SABAH-a xas hissəni əlavə edir:
+SABAH.OS inteqrasiyası, transkriptin saxlanması, Claude xülasəsi, e-poçt, API, admin panel.
 
 ```
- SABAH.OS Postgres (meetbot_reader, yalnız oxuma)
-        │  hər 60 s: yaxın 30 dəqiqədə Meet linki olan görüşlər
-        ▼
- ┌───────────────── meetbot (bu qovluq) ─────────────────┐
- │ meetbot-worker  calendar → bot planla; bitən görüşü   │
- │                 Claude-a göndər → AWS SES e-poçt      │
- │ meetbot-web     /webhooks/attendee/ (canlı transkript)│
- │                 /api/…  /admin/   ← meetbot.sabahos.com│
- └───────────┬──────────────────────────────▲────────────┘
-             │ POST /api/v1/bots (join_at)  │ imzalı webhook-lar
-             ▼                              │
- ┌──────────────── Attendee engine ─────────┴────────────┐
- │ attendee-worker-bot ×N  headless Chrome → Google Meet │
- │   hər iştirakçının ayrıca səsi → Gladia (az/ru/en)    │
- │ attendee-app ← attendee.sabahos.com · scheduler · …   │
- └───────────────────────────────────────────────────────┘
+ sabahos.com backend ──┐ MEETBOT_TOKEN_PROD     dev.sabahos.com backend ──┐ MEETBOT_TOKEN_DEV
+                       ▼                                                  ▼
+               POST /api/events/sync/  (Notetaker düyməsi açılan/dəyişən/silinən tədbirlər)
+               GET  /api/events/<id>/  (botun statusu + qeydlər → tədbirin popup-ı)
+ ┌───────────────── meetbot (meetbot.sabahos.com) ──────────────────┐
+ │ meetbot-web     /api/… /admin/ · /webhooks/attendee/ (daxili)     │
+ │ meetbot-worker  başlamağa 30 dəq qalanda bot yarat; bitən görüşü  │
+ │                 Claude-a göndər → AWS SES e-poçt                  │
+ └───────────┬──────────────────────────────────────▲───────────────┘
+             │ POST /api/v1/bots (join_at)          │ imzalı webhook-lar
+             ▼                                      │
+ ┌──────────────── Attendee engine ─────────────────┴───────────────┐
+ │ attendee-worker-bot ×N  headless Chrome → Google Meet            │
+ │   hər iştirakçının ayrıca səsi → Gladia (az/ru/en)               │
+ │ attendee-app ← attendee.sabahos.com · scheduler · …              │
+ └──────────────────────────────────────────────────────────────────┘
    postgres · redis · seaweedfs (daxili S3) — hamısı bir docker compose-da
 ```
 
 **Necə işləyir:**
 
-1. Worker hər dəqiqə SABAH.OS bazasından yaxın 30 dəqiqədə başlayan, Google Meet linki olan görüşləri oxuyur.
-   Bir neçə üzvün calendar-ındakı eyni görüş (Google importu) birləşdirilir, hər görüşə **bir bot** gedir.
-2. Hər görüş üçün Attendee-də planlaşdırılmış bot yaradılır. Bot başlanğıcdan 1 dəqiqə əvvəl qoşulur.
-   Görüş silinsə, ləğv olunsa və ya vaxtı dəyişsə, bot da ləğv olunur və ya yeni vaxta keçirilir.
-3. Bot Meet-də **hər iştirakçının səsini ayrıca** götürür və hər danışıq parçasını Gladia-ya göndərir.
-   Gladia mətni yalnız `az`, `ru`, `en` dilləri arasında tanıyır və danışan dil dəyişəndə özü də keçir (code-switching).
-   Danışanın adı Meet-dən gəlir, ona görə kimin nə dediyi dəqiq bilinir. Hər cümlə canlı olaraq bazaya yazılır.
-4. Görüş bitəndə tam transkript Claude-a gedir. Claude hansı dildə danışılmasından asılı olmayaraq
-   **ingiliscə** qeydlər yazır: qısa xülasə, əsas məqamlar, qərarlar, tapşırıqlar (kim, nə vaxta), açıq suallar, kim nə dedi.
-5. Xülasə admin paneldə və API-də görünür və təşkilatçıya backend-in istifadə etdiyi AWS SES ilə e-poçtla göndərilir.
-   Sonradan `/ask` ilə görüş haqqında sual vermək olar.
+1. **Düymə.** SABAH.OS calendar-ında tədbir redaktə olunanda Meet hissəsinə Google Meet linki yapışdırılır
+   (və ya "Add Google Meet" ilə yaradılır). Etibarlı link olandan sonra **"Add SABAH Notetaker"** düyməsi görünür.
+   Düymə açılıb tədbir yadda saxlananda backend tədbiri meetbot-a göndərir.
+2. **Bot planı.** Tədbirin vaxtı, linki dəyişəndə, tədbir silinəndə və ya düymə söndürüləndə backend bunu da dərhal göndərir.
+   Meetbot uyğun olaraq botu köçürür və ya ləğv edir. Bundan əlavə, backend hər saat açıq düyməli tədbirləri yenidən
+   göndərir ki, buraxılmış dəyişiklik qalmasın. Bot başlamağa 30 dəqiqə qalanda yaradılır və başlanğıcdan 1 dəqiqə əvvəl qoşulur.
+   Bir neçə üzvün calendar-ındakı eyni görüş birləşdirilir və ona **bir bot** gedir.
+3. **Dev/prod ayrılığı.** Hər SABAH.OS mühiti öz tokeni ilə gəlir (`MEETBOT_TOKEN_PROD`, `MEETBOT_TOKEN_DEV`) və yalnız öz görüşlərini görür.
+   Dev-dən gedən e-poçtun mövzusunda `[dev]` yazılır.
+4. **Transkripsiya.** Bot Meet-də **hər iştirakçının səsini ayrıca** götürüb Gladia-ya göndərir. Gladia yalnız `az`, `ru`, `en`
+   arasında tanıyır və danışan dil dəyişəndə özü də keçir. Danışanın adı Meet-dən gəlir.
+5. **Xülasə.** Görüş bitəndə transkript Claude-a gedir. Claude ingiliscə qeydlər yazır: qısa xülasə, əsas məqamlar, qərarlar,
+   tapşırıqlar (kim, nə vaxta), açıq suallar, kim nə dedi. Qeydlər təşkilatçıya AWS SES ilə e-poçtla gedir
+   və SABAH.OS-da tədbirin popup-ında "Show notes" ilə görünür.
 
 ---
 
@@ -52,6 +56,9 @@ calendar inteqrasiyası, transkriptin saxlanması, Claude xülasəsi, e-poçt, A
 |---|---|---|---|
 | `meetbot.sabahos.com` | A | Admin panel (`/admin/`), REST API (`/api/`), e-poçtdakı "full transcript" linki | **Bəli** |
 | `attendee.sabahos.com` | A | Attendee dashboard: botun ekran görüntüləri, xətalar, STT açarları | Tövsiyə olunur (IP ilə məhdudlaşdırın). Signed-in bot üçün məcburidir |
+
+**Cloudflare Tunnel istifadə edirsinizsə**, DNS və nginx lazım deyil. Public hostname-lər belə olmalıdır:
+`meetbot.sabahos.com` → HTTP `localhost:8100`, `attendee.sabahos.com` → HTTP `localhost:8101`.
 
 ### Portlar
 
@@ -88,12 +95,13 @@ Hər əlavə eyni vaxtlı görüş üçün +1 vCPU və +2 GB RAM lazımdır. Pro
 
 | Açar | Haradan |
 |---|---|
-| `GLADIA_API_KEY` | [app.gladia.io](https://app.gladia.io) → API keys. Hər ay 10 saat pulsuzdur, sonrakı qiymət Gladia saytındadır |
+| `GLADIA_API_KEY` | [app.gladia.io](https://app.gladia.io) → API keys. Yeni hesaba 50 € kredit verilir (1 il, Solaria-1 ilə ~185 saat). Sonra 0.27 €/saat, abunəsiz (qiymətlər 2026-11-19 tarixinə görə) |
 
 Bunlar serverdə `bootstrap.sh` tərəfindən avtomatik doldurulur, çünki Attendee bazasında yaranırlar:
 `ATTENDEE_API_KEY`, `ATTENDEE_WEBHOOK_SECRET`.
 
-SABAH.OS Postgres-i başqa serverdədirsə, `SABAH_DB_HOST`-u onun IP-si ilə əvəz edin (bölmə 4).
+`MEETBOT_TOKEN_PROD` və `MEETBOT_TOKEN_DEV` yaradılıb. Onları SABAH.OS backend-lərinə vermək üçün: `make backend-env`
+(bölmə 3a).
 
 `.env.example` eyni faylın sirsiz şablonudur.
 
@@ -136,9 +144,36 @@ make logs
 
 ---
 
-## 4. SABAH.OS bazasına çıxış (yalnız oxuma)
+## 3a. SABAH.OS backend-lərini qoşmaq (Notetaker düyməsi)
 
-Meetbot SABAH.OS koduna toxunmur. SABAH.OS Postgres-indən yalnız bunları **oxuyur**:
+```bash
+make backend-env
+```
+
+Bu əmr iki blok çap edir. Hər bloku uyğun serverdəki backend `.env`-inə əlavə edin və backend-i restart edin:
+
+```
+# sabahos.com backend .env
+MEETBOT_API_URL=https://meetbot.sabahos.com
+MEETBOT_API_TOKEN=<MEETBOT_TOKEN_PROD>
+
+# dev.sabahos.com backend .env
+MEETBOT_API_URL=https://meetbot.sabahos.com
+MEETBOT_API_TOKEN=<MEETBOT_TOKEN_DEV>
+```
+
+Backend-də `python manage.py migrate` (`calendars/0004`) işləməli, Celery worker və beat qalxmalıdır.
+Bunlar olmasa düymə görünmür (`/calendar/events/meet-status/` → `notetaker_available: false`).
+
+Cloudflare-də **Bot Fight Mode** açıqdırsa, backend-in serverdən göndərdiyi sorğular challenge-ə düşə bilər.
+O halda `meetbot.sabahos.com` üçün `URI Path starts with /api/` → **Skip** qaydası əlavə edin.
+
+## 4. (İstəyə bağlı) Avtomatik rejim: SABAH.OS bazasından oxumaq
+
+**Default olaraq söndürülüb** (`SABAH_DB_HOST=` boşdur), çünki bot düymə ilə işləyir. Bu rejim açılsa, bot düyməyə baxmadan
+Meet linki olan **bütün** görüşlərə qoşulur. Yalnız bunu həqiqətən istəsəniz açın.
+
+Bu rejimdə meetbot SABAH.OS Postgres-indən yalnız bunları **oxuyur**:
 `calendars_calendarevent`, `calendars_eventattendee` və `users` cədvəlinin `id, email, first_name, last_name` sütunları.
 Parol hashı və digər sütunlar bağlıdır. Rol `.env`-dəki parolla yaradılır:
 
@@ -208,17 +243,16 @@ Qurduqdan sonra `.env`-də `MEETBOT_GOOGLE_MEET_USE_LOGIN=true` yazın.
 
 ## 7. Hansı görüşlərə qoşulur
 
-Default olaraq bot Meet linki olan **bütün** təsdiqlənmiş görüşlərə qoşulur. Bunlara qoşulmur: task-lar, bütün günlük hadisələr,
-ləğv edilmişlər, Zoom və başqa linklər.
+Yalnız SABAH.OS-da **"Add SABAH Notetaker" düyməsi açılmış** tədbirlərə qoşulur. Şərtlər:
 
-| Ayar | Mənası |
-|---|---|
-| `MEETBOT_SKIP_TAG=#nobot` | Başlıq və ya təsvirdə `#nobot` olan görüşə bot getmir |
-| `MEETBOT_SKIP_PRIVATE=true` | "Private" görüşləri ötür |
-| `MEETBOT_JOIN_POLICY=tagged` | Yalnız `#meetbot` teqi olan görüşlərə getsin (opt-in rejimi) |
-| `MEETBOT_ORGANIZER_ALLOWLIST=a@sabahhub.com,…` | Yalnız bu təşkilatçıların görüşləri |
+- tədbirin etibarlı Google Meet linki olmalıdır (`https://meet.google.com/xxx-yyyy-zzz`, yapışdırılmış və ya yaradılmış);
+- vaxtı müəyyən görüş olmalıdır (bütün günlük hadisə və ya task olmaz);
+- tədbir ləğv edilməmiş olmalıdır.
 
----
+Təkrarlanan tədbirdə düymə seçilən əhatəyə görə tətbiq olunur ("this / following / all").
+Hər görüşün botu yalnız həmin görüşdən 30 dəqiqə əvvəl yaradılır.
+
+Google Calendar-dan import edilmiş tədbirdə də düyməni açmaq olar. Onun Meet linkini isə yalnız Google-da dəyişmək olar.
 
 ## 8. Nəticələr
 
@@ -226,7 +260,9 @@ ləğv edilmişlər, Zoom və başqa linklər.
   göndərən `SABAH Meetbot <no-reply@sabahhub.com>`. Mövzu `Meeting notes: <title> (<date>)`-dir. Məktub HTML və mətn variantında olur
   və tam transkriptə link verir. Kimə gedəcəyini `MEETBOT_EMAIL_TO` təyin edir: `organizer` (default), `invitees` (bütün iştirakçılar) və ya `none`.
   `MEETBOT_EMAIL_ALLOWED_DOMAINS=sabahhub.com` daxili qeydlərin kənar qonaqlara getməsinin qarşısını alır.
-- **Admin panel** `https://meetbot.sabahos.com/admin/`: görüşlər, status, xülasə, tam transkript.
+- **SABAH.OS** — tədbirin popup-ında botun statusu görünür: "will join", "in the meeting", "notes are ready".
+  Görüş bitəndən sonra "Show notes" ilə qeydlər açılır. Bunu yalnız görüşün iştirakçıları görür.
+- **Admin panel** `https://meetbot.sabahos.com/admin/`: bütün mühitlərin görüşləri (`client` sütunu: prod/dev), status, xülasə, tam transkript.
   Buradan "Xülasəni yenidən hazırla" və "Botu dayandır" əmrləri də işləyir.
 - **Webhook.** `MEETBOT_RESULT_WEBHOOK_URL` göstərilsə, hər hazır xülasə JSON kimi POST olunur.
   Başlıq `X-Meetbot-Signature: sha256=<HMAC(MEETBOT_RESULT_WEBHOOK_SECRET, body)>`-dir.
@@ -236,7 +272,12 @@ Bunlardan başqa: `no_transcript`, `cancelled`, `failed` (səbəb `last_error`-d
 
 ## 9. API
 
-Bütün sorğular `Authorization: Bearer $MEETBOT_API_TOKEN` başlığı ilə göndərilir (token `.env`-dədir).
+Tokenlər:
+- `MEETBOT_API_TOKEN` admin tokenidir və bütün mühitləri görür.
+- `MEETBOT_TOKEN_PROD` / `MEETBOT_TOKEN_DEV` yalnız öz mühitinin görüşlərini görür.
+- SABAH.OS backend-i mühit tokeni ilə bu iki endpoint-i işlədir: `POST /api/events/sync/` və `GET /api/events/<event_id>/`.
+
+Admin tokeni ilə nümunələr:
 
 ```bash
 T=$(grep ^MEETBOT_API_TOKEN= .env | cut -d= -f2); H="Authorization: Bearer $T"; U=https://meetbot.sabahos.com
@@ -285,6 +326,8 @@ curl -s -H "$H" -X DELETE "$U/api/meetings/<id>/"                # planlanmış 
 
 | Əlamət | Səbəb / həll |
 |---|---|
+| SABAH.OS-da "Add SABAH Notetaker" düyməsi görünmür | Backend `.env`-də `MEETBOT_API_URL`/`MEETBOT_API_TOKEN` yoxdur və ya backend restart olmayıb. Tədbirdə etibarlı Meet linki olmalıdır |
+| Düymə açılıb, amma admin-də görüş yoxdur | Backend Celery worker-i işləmir və ya Cloudflare sorğunu bloklayır (bölmə 3a). Backend logunda `[Notetaker]` axtarın |
 | Görüş `scheduled`-da qalır, "gözləmə otağındadır" | Botu Meet-də **Admit** edin (bölmə 6) |
 | Görüş `no_transcript` | Bot qəbul olunmayıb (`bot_event`-ə baxın) və ya `GLADIA_API_KEY` boşdur/səhvdir (`make stt-keys`). Attendee dashboard → bot → Transcription errors |
 | Calendar görüşləri gəlmir | `make logs`-da `calendar sync` xətası. Bölmə 4: rol, `listen_addresses`, `pg_hba.conf` |
@@ -296,7 +339,8 @@ curl -s -H "$H" -X DELETE "$U/api/meetings/<id>/"                # planlanmış 
 ## 13. Məxfilik
 
 - Bot görüşə açıq adla daxil olur və çata xəbərdarlıq yazır. Bunu söndürməyin, iştirakçıların razılığı vacibdir.
-- `#nobot` teqi ilə istənilən görüşü botdan azad etmək olar. Private görüşlər default olaraq ötürülür.
+- Bot yalnız kimsə "Add SABAH Notetaker" düyməsini açdığı görüşə qoşulur. Düyməni istənilən vaxt söndürmək olar.
+  Görüş zamanı söndürülsə, bot görüşdən çıxır.
 - Səs və ya video yazısı saxlanmır (`MEETBOT_RECORDING_FORMAT=none`). Səs yalnız STT üçün Gladia-ya gedir, serverdəki müvəqqəti nüsxə 1 gündən sonra silinir.
 - Claude və SES açarları yalnız meetbot konteynerlərindədir. Chrome işlədən bot konteynerlərinə ötürülmür.
 - SABAH.OS bazasına çıxış yalnız oxumaq üçündür və 3 cədvəllə məhdudlaşdırılıb.

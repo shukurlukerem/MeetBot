@@ -10,8 +10,8 @@ from .summarizer import transcript_text
 
 @admin.register(Meeting)
 class MeetingAdmin(admin.ModelAdmin):
-    list_display = ("start", "title", "organizer_email", "status", "bot_state", "utterance_count")
-    list_filter = ("status", "source", "bot_state")
+    list_display = ("start", "title", "client", "organizer_email", "status", "bot_state", "utterance_count")
+    list_filter = ("client", "status", "source", "bot_state")
     search_fields = ("title", "organizer_email", "meeting_url", "bot_id", "summary_markdown")
     date_hierarchy = "start"
     ordering = ("-start",)
@@ -19,6 +19,7 @@ class MeetingAdmin(admin.ModelAdmin):
     readonly_fields = (
         "uid",
         "source",
+        "client",
         "dedup_key",
         "source_event_ids",
         "meeting_url",
@@ -59,7 +60,7 @@ class MeetingAdmin(admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
-        ("Texniki", {"fields": ("uid", "source", "dedup_key", "source_event_ids", "summary_usage", "description", "created_at", "updated_at"), "classes": ("collapse",)}),
+        ("Texniki", {"fields": ("uid", "source", "client", "dedup_key", "source_event_ids", "summary_usage", "description", "created_at", "updated_at"), "classes": ("collapse",)}),
     )
 
     def has_add_permission(self, request):

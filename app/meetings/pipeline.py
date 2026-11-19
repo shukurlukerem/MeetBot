@@ -176,10 +176,20 @@ def reconcile_bots(now=None, client=None, limit=50):
     return changed
 
 
-def retry_pending(now=None, client=None):
-    """Retry bot creation for meetings whose previous attempt failed (manual ones included)."""
+def schedule_due(now=None, client=None, limit=50):
+    """Create bots for PENDING meetings starting within the lookahead (and retry failed attempts).
+
+    Meetings asked for far ahead (a whole recurring series) wait here as rows; Attendee only
+    gets a bot once the meeting is near.
+    """
     now = now or timezone.now()
-    for meeting in Meeting.objects.filter(status=Meeting.Status.PENDING, next_attempt_at__lte=now)[:20]:
+    lookahead = timedelta(minutes=settings.MEETBOT["LOOKAHEAD_MINUTES"])
+    due = (
+        Meeting.objects.filter(status=Meeting.Status.PENDING, start__lte=now + lookahead)
+        .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
+        .order_by("start")[:limit]
+    )
+    for meeting in due:
         schedule_bot(meeting, client=client, now=now)
 
 
