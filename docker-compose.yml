@@ -1,0 +1,197 @@
+# SABAH Meetbot — self-hosted Google Meet notetaker.
+#
+#   Attendee engine (open source, ELv2): joins Meet with headless Chrome and captures captions
+#   meetbot bridge (ours):               SABAH.OS calendar → bots → transcript → Claude summary
+#
+# First run: ./scripts/bootstrap.sh   (generates secrets, builds, migrates, creates API keys)
+# Ports are bound to 127.0.0.1 only — nginx (deploy/nginx/meetbot.sabahos.com.conf) sits in front.
+
+name: meetbot
+
+x-attendee-env: &attendee-env
+  DJANGO_SETTINGS_MODULE: attendee.settings.production
+  DJANGO_SECRET_KEY: ${ATTENDEE_DJANGO_SECRET_KEY:?run ./scripts/bootstrap.sh first}
+  CREDENTIALS_ENCRYPTION_KEY: ${ATTENDEE_CREDENTIALS_ENCRYPTION_KEY:?run ./scripts/bootstrap.sh first}
+  DATABASE_URL: postgresql://meetbot:${POSTGRES_PASSWORD:?run ./scripts/bootstrap.sh first}@postgres:5432/attendee
+  POSTGRES_SSL_REQUIRE: "false"
+  REDIS_URL: redis://redis:6379/0
+  # TLS ends at nginx; Attendee itself speaks plain HTTP inside the compose network.
+  DJANGO_SSL_REQUIRE: "false"
+  SITE_DOMAIN: ${ATTENDEE_DOMAIN:-localhost:8101}
+  CSRF_TRUSTED_ORIGINS: https://${ATTENDEE_DOMAIN:-localhost:8101}
+  DISABLE_SIGNUP: "true"
+  DISABLE_EMAIL: "true"
+  # Webhooks go to meetbot-web over the internal network.
+  REQUIRE_HTTPS_WEBHOOKS: "false"
+  # S3-compatible storage (SeaweedFS below) for debug screenshots / optional recordings.
+  STORAGE_PROTOCOL: s3
+  AWS_ENDPOINT_URL: http://seaweedfs:8333
+  AWS_ACCESS_KEY_ID: meetbot
+  AWS_SECRET_ACCESS_KEY: meetbot-internal
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_RECORDING_STORAGE_BUCKET_NAME: attendee-recordings
+  CHROME_TIMEZONE: ${TIME_ZONE:-Asia/Baku}
+  ENABLE_CHROME_SANDBOX: "false"
+  ATTENDEE_LOG_LEVEL: ${ATTENDEE_LOG_LEVEL:-INFO}
+  # Every light task goes to the `light` queue, so a busy bot worker never delays webhooks or
+  # captions processing. Only `run_bot` stays on the default `celery` queue (bot workers).
+  PROCESS_UTTERANCE_CELERY_QUEUE: light
+  PROCESS_ASYNC_TRANSCRIPTION_CELERY_QUEUE: light
+  SYNC_CALENDAR_CELERY_QUEUE: light
+  LAUNCH_SCHEDULED_BOT_CELERY_QUEUE: light
+  LAUNCH_ADHOC_BOT_CELERY_QUEUE: light
+  DELIVER_WEBHOOK_CELERY_QUEUE: light
+
+x-attendee: &attendee
+  build:
+    context: ./attendee-engine
+  image: sabah-meetbot/attendee:local
+  platform: linux/amd64
+  restart: unless-stopped
+  environment: *attendee-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  networks: [meetbot]
+
+x-meetbot: &meetbot
+  build:
+    context: ./app
+  image: sabah-meetbot/app:local
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://meetbot:${POSTGRES_PASSWORD}@postgres:5432/meetbot
+    ATTENDEE_API_URL: http://attendee-app:8000
+  depends_on:
+    postgres:
+      condition: service_healthy
+  # Lets SABAH_DATABASE_URL point at a Postgres published on this host (host.docker.internal:5432).
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks: [meetbot]
+
+services:
+  # --- Attendee engine --------------------------------------------------------
+  attendee-app:
+    <<: *attendee
+    entrypoint: []
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             exec gunicorn attendee.wsgi --bind 0.0.0.0:8000 --workers 3 --timeout 120 --access-logfile -"
+    ports:
+      - "127.0.0.1:${ATTENDEE_PORT:-8101}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  attendee-scheduler:
+    <<: *attendee
+    entrypoint: []
+    command: python manage.py run_scheduler
+
+  attendee-worker-light:
+    <<: *attendee
+    entrypoint: []
+    command: celery -A attendee worker -l INFO -Q light --concurrency=4 -n light@%h
+
+  # One container = one bot at a time (own PulseAudio, own Chrome). Scale with ATTENDEE_BOT_WORKERS
+  # to the number of meetings that can run at the same moment. Each needs ~1 CPU and 1.5-2 GB RAM.
+  attendee-worker-bot:
+    <<: *attendee
+    command: celery -A attendee worker -l INFO -Q celery --concurrency=1 -n bot@%h
+    shm_size: 2gb
+    stop_grace_period: 60s
+    deploy:
+      replicas: ${ATTENDEE_BOT_WORKERS:-2}
+
+  # Marks bots whose worker died (no heartbeat) as failed, so their meeting still gets summarised,
+  # and empties the raw PCM audio Attendee keeps in Postgres for speech-to-text (older than 1 day).
+  attendee-janitor:
+    <<: *attendee
+    entrypoint: []
+    command: >
+      sh -c "i=0; while true; do
+               python manage.py clean_up_bots_with_heartbeat_timeout_or_that_never_launched || true;
+               if [ $$((i % 12)) -eq 0 ]; then python manage.py clear_old_audio_chunks || true; fi;
+               i=$$((i + 1)); sleep 300;
+             done"
+
+  attendee-storage-init:
+    <<: *attendee
+    entrypoint: []
+    restart: "no"
+    command: python /bootstrap/create_bucket.py
+    volumes:
+      - ./scripts/create_bucket.py:/bootstrap/create_bucket.py:ro
+    depends_on:
+      seaweedfs:
+        condition: service_started
+    profiles: [setup]
+
+  # --- Meetbot bridge -----------------------------------------------------------
+  meetbot-web:
+    <<: *meetbot
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             exec gunicorn meetbot.wsgi --bind 0.0.0.0:8000 --workers 3 --timeout 300 --access-logfile -"
+    ports:
+      - "127.0.0.1:${MEETBOT_PORT:-8100}:8000"
+
+  meetbot-worker:
+    <<: *meetbot
+    command: python manage.py run_worker
+    healthcheck:
+      disable: true
+    depends_on:
+      meetbot-web:
+        condition: service_healthy
+
+  # --- Infrastructure -----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meetbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: meetbot
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./scripts/postgres-init.sh:/docker-entrypoint-initdb.d/10-attendee-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meetbot -d meetbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [meetbot]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis:/data
+    networks: [meetbot]
+
+  # Internal-only S3 endpoint (no published port, no auth needed inside the network).
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.97
+    restart: unless-stopped
+    command: ["server", "-dir=/data", "-s3"]
+    volumes:
+      - seaweedfs:/data
+    networks: [meetbot]
+
+networks:
+  meetbot:
+
+volumes:
+  postgres:
+  redis:
+  seaweedfs:

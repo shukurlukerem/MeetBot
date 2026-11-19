@@ -1,0 +1,7 @@
+.env
+.env.bak
+attendee-engine/
+app/db.sqlite3
+app/staticfiles/
+__pycache__/
+*.pyc
